@@ -36,6 +36,7 @@ class GaussianModel:
             symm = strip_symmetric(actual_covariance)
             return symm
         
+        #构建激活函数
         self.scaling_activation = torch.exp
         self.scaling_inverse_activation = torch.log
 
@@ -48,21 +49,21 @@ class GaussianModel:
 
 
     def __init__(self, sh_degree, optimizer_type="default"):
-        self.active_sh_degree = 0
-        self.optimizer_type = optimizer_type
-        self.max_sh_degree = sh_degree  
-        self._xyz = torch.empty(0)
-        self._features_dc = torch.empty(0)
-        self._features_rest = torch.empty(0)
-        self._scaling = torch.empty(0)
-        self._rotation = torch.empty(0)
-        self._opacity = torch.empty(0)
-        self.max_radii2D = torch.empty(0)
-        self.xyz_gradient_accum = torch.empty(0)
-        self.denom = torch.empty(0)
-        self.optimizer = None
-        self.percent_dense = 0
-        self.spatial_lr_scale = 0
+        self.active_sh_degree = 0 #球谐函数阶数
+        self.optimizer_type = optimizer_type 
+        self.max_sh_degree = sh_degree  #球谐函数最高阶数
+        self._xyz = torch.empty(0) #椭球位置(x,y,z)
+        self._features_dc = torch.empty(0) #球谐函数直流分量
+        self._features_rest = torch.empty(0) #球谐函数高阶分量
+        self._scaling = torch.empty(0) #缩放因子
+        self._rotation = torch.empty(0) #旋转因子
+        self._opacity = torch.empty(0) #不透明度
+        self.max_radii2D = torch.empty(0) #投影到平面的二维高斯分布最大半径
+        self.xyz_gradient_accum = torch.empty(0) #点云位置梯度的累计值
+        self.denom = torch.empty(0) #统计的分母数量
+        self.optimizer = None 
+        self.percent_dense = 0 #百分比密度
+        self.spatial_lr_scale = 0 #学习率因子
         self.setup_functions()
 
     def capture(self):
@@ -142,6 +143,7 @@ class GaussianModel:
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
+#球谐函数阶数会增加
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
@@ -149,6 +151,7 @@ class GaussianModel:
     def create_from_pcd(self, pcd : BasicPointCloud, cam_infos : int, spatial_lr_scale : float):
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
+        #RGB颜色值转换为球谐函数系数
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
         features[:, :3, 0 ] = fused_color
