@@ -75,11 +75,13 @@ def strip_lowerdiag(L):
 def strip_symmetric(sym):
     return strip_lowerdiag(sym)
 
+#四元数（Quaternion） 转换为 旋转矩阵
 def build_rotation(r):
     norm = torch.sqrt(r[:,0]*r[:,0] + r[:,1]*r[:,1] + r[:,2]*r[:,2] + r[:,3]*r[:,3])
 
     q = r / norm[:, None]
 
+#R的第一个轴指的是高斯球个数
     R = torch.zeros((q.size(0), 3, 3), device='cuda')
 
     r = q[:, 0]
@@ -87,6 +89,7 @@ def build_rotation(r):
     y = q[:, 2]
     z = q[:, 3]
 
+#所有高斯球的旋转矩阵
     R[:, 0, 0] = 1 - 2 * (y*y + z*z)
     R[:, 0, 1] = 2 * (x*y - r*z)
     R[:, 0, 2] = 2 * (x*z + r*y)
@@ -102,6 +105,7 @@ def build_scaling_rotation(s, r):
     L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda")
     R = build_rotation(r)
 
+#缩放系数 $s$ 放入一个 3x3 矩阵的对角线上
     L[:,0,0] = s[:,0]
     L[:,1,1] = s[:,1]
     L[:,2,2] = s[:,2]

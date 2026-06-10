@@ -53,7 +53,7 @@ C4 = [
     0.6258357354491761,
 ]   
 
-
+ #球谐函数， 阶数、系数、相机的视线方向。输出：得到该视角下的最终颜色（RGB 值）。
 def eval_sh(deg, sh, dirs):
     """
     Evaluate spherical harmonics at unit directions
@@ -82,6 +82,8 @@ def eval_sh(deg, sh, dirs):
         if deg > 1:
             xx, yy, zz = x * x, y * y, z * z
             xy, yz, xz = x * y, y * z, x * z
+
+            #球谐函数的基底 $Y_l^m$ 可以被证明是空间坐标 $x, y, z$ 的齐次多项式。
             result = (result +
                     C2[0] * xy * sh[..., 4] +
                     C2[1] * yz * sh[..., 5] +
