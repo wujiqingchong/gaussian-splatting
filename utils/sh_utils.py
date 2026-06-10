@@ -54,6 +54,7 @@ C4 = [
 ]   
 
  #球谐函数， 阶数、系数、相机的视线方向。输出：得到该视角下的最终颜色（RGB 值）。
+ #sh完整形状(N,C,K): 高斯球个数 * 颜色通道 * SH 系数的个数（比如 16 个）
 def eval_sh(deg, sh, dirs):
     """
     Evaluate spherical harmonics at unit directions
@@ -71,13 +72,14 @@ def eval_sh(deg, sh, dirs):
     coeff = (deg + 1) ** 2
     assert sh.shape[-1] >= coeff
 
-    result = C0 * sh[..., 0]
+    result = C0 * sh[..., 0] #C0 * SH第0项Y00，就是0阶的球谐函数
     if deg > 0:
         x, y, z = dirs[..., 0:1], dirs[..., 1:2], dirs[..., 2:3]
         result = (result -
                 C1 * y * sh[..., 1] +
                 C1 * z * sh[..., 2] -
                 C1 * x * sh[..., 3])
+#C1*y=Y_{-1,1} 
 
         if deg > 1:
             xx, yy, zz = x * x, y * y, z * z

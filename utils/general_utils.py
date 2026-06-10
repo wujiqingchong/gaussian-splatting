@@ -75,7 +75,7 @@ def strip_lowerdiag(L):
 def strip_symmetric(sym):
     return strip_lowerdiag(sym)
 
-#四元数（Quaternion） 转换为 旋转矩阵
+#四元数（Quaternion） 转换为 旋转矩阵 (3*3)
 def build_rotation(r):
     norm = torch.sqrt(r[:,0]*r[:,0] + r[:,1]*r[:,1] + r[:,2]*r[:,2] + r[:,3]*r[:,3])
 

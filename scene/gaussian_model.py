@@ -153,16 +153,18 @@ class GaussianModel:
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         #RGB颜色值转换为球谐函数系数
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
+        #features 的形状是 (N, 3, 16)，存储的是“球谐函数系数”
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
-        features[:, :3, 0 ] = fused_color
+        features[:, :3, 0 ] = fused_color# 先默认只有直流分量的点，高阶都是0
         features[:, 3:, 1:] = 0.0
 
-        print("Number of points at initialisation : ", fused_point_cloud.shape[0])
+        print("Number of points at initialisation : ", fused_point_cloud.shape[0]) #点云数量
 
+#对于每一个点，找到距离它最近的 3 个点.  返回一个数组，包含每个点到其最近邻点的距离的平方
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
-        #高斯椭球形状
+        #高斯椭球形状（椭球三个轴的长度都先设为sqrt(dist2)）
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
-        #旋转因子初始化
+        #旋转因子初始化（4指的是四元数）
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
@@ -194,7 +196,7 @@ class GaussianModel:
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"}
         ]
-
+#优化器
         if self.optimizer_type == "default":
             self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         elif self.optimizer_type == "sparse_adam":
@@ -225,9 +227,10 @@ class GaussianModel:
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
                 lr = self.xyz_scheduler_args(iteration)
-                param_group['lr'] = lr
+                param_group['lr'] = lr #优化后的学习率传给param_group
                 return lr
 
+#把x,y,z,法向量nx,ny.nz,opacity，scale，rot打包放进同一个数组里
     def construct_list_of_attributes(self):
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
         # All channels except the 3 DC
@@ -242,6 +245,7 @@ class GaussianModel:
             l.append('rot_{}'.format(i))
         return l
 
+#训练结果存到点云文件里
     def save_ply(self, path):
         mkdir_p(os.path.dirname(path))
 
