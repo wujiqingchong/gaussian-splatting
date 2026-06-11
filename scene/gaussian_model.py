@@ -324,7 +324,8 @@ class GaussianModel:
 
         self.active_sh_degree = self.max_sh_degree
 
-#张量转到优化器里，便于优化
+#作用：用一个全新的 Tensor 完整替换旧 Tensor。
+#场景：通常用于需要彻底重置某个属性的场景（比如重置颜色或旋转）。
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -340,7 +341,8 @@ class GaussianModel:
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 
-#重置优化器
+#作用：当你要删掉某些不重要的高斯球时，同步删除优化器中对应的动量状态
+#场景：透明度太低的高斯球被移除。
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -358,9 +360,11 @@ class GaussianModel:
                 group["params"][0] = nn.Parameter(group["params"][0][mask].requires_grad_(True))
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
-
-#充值点
-
+    
+#C. 修剪
+# 透明度低：< min_opacity，说明这个球对画面贡献极小，删掉。
+# 太大（屏幕空间）：max_radii2D > max_screen_size，说明球在屏幕上占据了过大空间，导致画面产生锯齿或模糊，删掉。
+# 太大（世界空间）：big_points_ws > 0.1 * extent，过大的球通常是拟合异常，需要清理。
     def prune_points(self, mask):
         valid_points_mask = ~mask
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
@@ -378,6 +382,8 @@ class GaussianModel:
         self.max_radii2D = self.max_radii2D[valid_points_mask]
         self.tmp_radii = self.tmp_radii[valid_points_mask]
 
+#作用：当算法决定“增加高斯球”时使用。
+#场景：当你克隆或分裂一个高斯球，使其数量增加。
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -400,6 +406,8 @@ class GaussianModel:
 
         return optimizable_tensors
 
+# 当系统通过“克隆（Clone）”或“分裂（Split）”生成了一批新高斯球后，
+# 需要把它们“登记入册”，让模型和优化器都能识别并训练这些新点。
     def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii):
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
@@ -421,19 +429,25 @@ class GaussianModel:
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
+
+# B. 分裂
+# 触发条件：梯度大，但高斯球本身“非常大”（scaling > percent_dense * extent）。操作：说明这个球覆盖范围太广，
+# 试图拟合太大的区域导致失真。我们将其“分裂”成 $N$ 个更小的高斯球。核心数学：new_xyz = torch.bmm(rots, samples) + self.get_xyz。
+# 代码通过旋转矩阵将原本的一个大球分布到周围，并缩小
+# 每个小球的 scaling（除以 $N$ 的缩放因子）。这类似于把一个模糊的大泥团捏碎成几个精致的小泥人。
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
         padded_grad[:grads.shape[0]] = grads.squeeze()
-        selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
+        selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)         #梯度大
         selected_pts_mask = torch.logical_and(selected_pts_mask,
-                                              torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
+                                              torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent) # 高斯球大
 
-        stds = self.get_scaling[selected_pts_mask].repeat(N,1)
-        means =torch.zeros((stds.size(0), 3),device="cuda")
+        stds = self.get_scaling[selected_pts_mask].repeat(N,1)#新的俩高斯复制原本球的标准差
+        means =torch.zeros((stds.size(0), 3),device="cuda")#新的俩高斯球位置=0
         samples = torch.normal(mean=means, std=stds)
-        rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
+        rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)#新的俩高斯球旋转因子复制原本球的
         new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
         new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
@@ -446,16 +460,21 @@ class GaussianModel:
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
+ 
+# A. 克隆
+# 触发条件：梯度大，但高斯球本身“比较小”（scaling <= percent_dense * extent）。
+# 操作：直接复制一份高斯球的参数，原地生成一个完全一样的新球。
+# 逻辑：在高梯度区域增加样本密度，提升局部细节表现。
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
         # Extract points that satisfy the gradient condition
-        selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
+        selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)#梯度大
         selected_pts_mask = torch.logical_and(selected_pts_mask,
-                                              torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
+                                              torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent) #高斯球本身“比较小”
         
         new_xyz = self._xyz[selected_pts_mask]
-        new_features_dc = self._features_dc[selected_pts_mask]
-        new_features_rest = self._features_rest[selected_pts_mask]
+        new_features_dc = self._features_dc[selected_pts_mask]#存储的是sh颜色球谐函数的 0 阶系数
+        new_features_rest = self._features_rest[selected_pts_mask]#存储的是sh颜色球谐函数的 其余高阶系数
         new_opacities = self._opacity[selected_pts_mask]
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
@@ -463,6 +482,12 @@ class GaussianModel:
         new_tmp_radii = self.tmp_radii[selected_pts_mask]
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii)
+
+#这是密度控制的“大脑”，每隔几百步调用一次。它的逻辑如下：
+# 计算梯度：查看哪些高斯球的坐标（XYZ）在反向传播中产生的梯度很大。
+# 梯度大意味着这个位置当前“亏欠”模型很多，需要更多的模型容量（高斯球）来拟合。
+# 调用 Clone 和 Split：根据梯度大小决定如何增加高斯球。
+# 修剪（Prune）：清理掉那些没用的球（比如透明度太低、或者太大导致渲染模糊的球）。
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, radii):
         grads = self.xyz_gradient_accum / self.denom
@@ -477,7 +502,7 @@ class GaussianModel:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
-        self.prune_points(prune_mask)
+        self.prune_points(prune_mask)# 剔除掉不合条件的球
         tmp_radii = self.tmp_radii
         self.tmp_radii = None
 

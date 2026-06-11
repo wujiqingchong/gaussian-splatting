@@ -24,13 +24,13 @@ class Camera(nn.Module):
                  ):
         super(Camera, self).__init__()
 
-        self.uid = uid
-        self.colmap_id = colmap_id
-        self.R = R
-        self.T = T
-        self.FoVx = FoVx
-        self.FoVy = FoVy
-        self.image_name = image_name
+        self.uid = uid  #相机的唯一标识符，用于在训练数据集中索引每一张特定的照片。
+        self.colmap_id = colmap_id   #来自 COLMAP 的原始索引
+        self.R = R  # 旋转矩阵，形状为 3*3。它描述了相机坐标轴相对于世界坐标轴的朝向。决定了相机是横着看、竖着看，还是歪着头看。
+        self.T = T  #平移向量，形状为 $3 \times 1$。它描述了相机光心（Center）在世界坐标系中的位移。
+        self.FoVx = FoVx   #水平视场角
+        self.FoVy = FoVy   #垂直视场角
+        self.image_name = image_name  #图片的原始文件名
 
         try:
             self.data_device = torch.device(data_device)
@@ -77,12 +77,13 @@ class Camera(nn.Module):
                 self.invdepthmap = self.invdepthmap[..., 0]
             self.invdepthmap = torch.from_numpy(self.invdepthmap[None]).to(self.data_device)
 
-        self.zfar = 100.0
-        self.znear = 0.01
+        self.zfar = 100.0  #相机最远点
+        self.znear = 0.01  #相机最近点
 
         self.trans = trans
         self.scale = scale
 
+#世界坐标系到相机坐标系的转换
         self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1).cuda()
         self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
