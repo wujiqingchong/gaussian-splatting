@@ -38,3 +38,63 @@ distCUDA2(...)：寻找最近邻距离<br>
 FoVx 和 FoVy (Field of View in X/Y): 水平视场角和垂直视场角。
 它们定义了相机视锥体（Frustum）的张开程度。
 比如，FoVx 越大，视野越宽，图像里的物体显得越小（广角）；FoVx 越小，视野越窄，图像里的物体显得越大（长焦）。
+
+# submodules文件夹
+1. diff-gaussian-rasterization (核心引擎)
+这是最重要的模块，它实现了 3D 高斯球的光栅化（Rasterization）算法。
+它是做什么的？
+它直接处理数百万个 3D 高斯球，并将它们实时投影到 2D 图像平面上。
+它实现了可微渲染（Differentiable Rendering），这意味着它不仅能负责“画出图像”，还能计算出渲染结果相对于高斯球参数（位置、旋转、颜色等）的梯度，从而让模型可以通过梯度下降进行学习。
+为什么独立出来？因为它是高度优化过的 CUDA 代码。Python 处理百万级点的循环会极其缓慢，必须通过 C++/CUDA 在 GPU 上运行，才能达到实时（每秒几十帧）的渲染速度。
+
+2. simple-knn (空间搜索模块)
+这是用于 “空间自适应” 的算法库。
+它是做什么的？
+它的全称是 Simple K-Nearest Neighbors。它的作用是为每个高斯球寻找它在 3D 空间中最近的 $K$ 个邻居（通常 $K=3$）。
+为什么需要它？
+正如你之前问到的 distCUDA2，我们需要通过邻居的距离来计算每个高斯球的初始大小（Scaling）。
+如果没有这个模块，我们就无法实现场景的“自适应密度控制”——即无法根据点云的疏密程度自动分配高斯球的覆盖范围。
+
+3. fused-ssim (评估指标模块)
+这是用于 “模型质量评价” 的工具。
+它是做什么的？
+它的全称是 Fused Structural Similarity Index Measure。SSIM 是一种衡量两张图片相似度的算法（比简单的 MSE 均方误差更能反映人眼感受）。
+为什么需要它？
+3DGS 的训练目标不仅仅是让像素值吻合，更是要让渲染出的图像在结构上看起来真实。
+fused 代表它是一个融合优化版本。它将图像的对比度、亮度、结构相似性计算合并在一次 GPU 操作中，相比传统的 CPU 实现，极大加快了训练期间评价模型效果的速度。
+
+
+# diff-gaussian-rasterization文件夹，一个cuda文件都有什么
+|   .gitignore
+|   .gitmodules
+|   CMakeLists.txt
+这是 C++ 的项目配置文件。当你运行 pip install . 时，它会告诉系统：“我们需要用 CMake 来编译这个项目，记得链接 CUDA 库”。没有它，Python 无法调用 C++ 代码。
+|   ext.cpp
+这是 Python 和 C++ 之间的翻译官（通常利用 PyTorch 的 pybind11）。它告诉 Python：“我这里有一个 rasterize_gaussians 函数，你传给我 Tensor，我传给你渲染结果”。
+|   LICENSE.md
+|   rasterize_points.cu
+|   rasterize_points.h
+这是“对外接口”。它负责把 Python 传进来的 Tensor（比如相机矩阵、高斯参数）转换成 GPU 能看得懂的内存布局，然后调用 cuda_rasterizer 里的函数。
+|   README.md
+|   setup.py
+这是 Python 的安装入口。当你执行 pip install . 时，它会调用上面的 CMakeLists.txt，把那一堆 .cu 和 .cpp 文件编译成一个 Python 可以直接调用的二进制库（通常是 .so 或 .pyd 文件）。
+|   
++---cuda_rasterizer
+这是真正的心脏。它实现了 3DGS 最底层的逻辑：如何把百万个高斯球像撒点一样投影到屏幕，并计算每个像素的颜色。
+|       auxiliary.h
+|       backward.cu
+|       backward.h
+|       config.h
+|       forward.cu
+|       forward.h
+|       rasterizer.h
+|       rasterizer_impl.cu
+|       rasterizer_impl.h
+|       
++---diff_gaussian_rasterization
+|       __init__.py
+|       
+\---third_party存放第三方代码。比如 3DGS 用到了一些别人写好的、极其高效的数学计算库（如 glm），这些不需要自己重新造轮子。
+    |   stbi_image_write.h
+    |   
+    \---glm
