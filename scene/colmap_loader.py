@@ -13,14 +13,22 @@ import numpy as np
 import collections
 import struct
 
+#记录了相机模型的信息（比如它是针孔相机还是鱼眼相机），以及该模型需要多少个参数来描述镜头畸变。
 CameraModel = collections.namedtuple(
     "CameraModel", ["model_id", "model_name", "num_params"])
+#相机的实体定义。记录了它的宽、高以及具体的内参（焦距、主点等）。
 Camera = collections.namedtuple(
     "Camera", ["id", "model", "width", "height", "params"])
+#这是最重要的数据结构之一。它代表了每一张被 COLMAP 处理过的照片。
+#qvec, tvec：代表旋转（四元数）和平移（位置），即相机的姿态。
+#point3D_ids：这张照片里的每一个像素点，对应场景里哪一个三维点。这是实现“从 2D 到 3D 映射”的关键。
 BaseImage = collections.namedtuple(
     "Image", ["id", "qvec", "tvec", "camera_id", "name", "xys", "point3D_ids"])
+#代表场景里的一个三维点。它记录了坐标 (xyz)、颜色 (rgb) 以及哪些照片拍到了这个点。
 Point3D = collections.namedtuple(
     "Point3D", ["id", "xyz", "rgb", "error", "image_ids", "point2D_idxs"])
+
+#定义了 COLMAP 支持的所有镜头类型。
 CAMERA_MODELS = {
     CameraModel(model_id=0, model_name="SIMPLE_PINHOLE", num_params=3),
     CameraModel(model_id=1, model_name="PINHOLE", num_params=4),
@@ -122,6 +130,9 @@ def read_points3D_text(path):
 
     return xyzs, rgbs, errors
 
+# 这是 3DGS 初始化的“种子”：
+# COLMAP 重建出来的点云（points3D.bin）是高斯球最初的分布位置。
+# 这个函数将这些点的坐标 (XYZ) 和颜色 (RGB) 读出来，送给 GaussianModel 初始化。
 def read_points3D_binary(path_to_model_file):
     """
     see: src/base/reconstruction.cc
@@ -177,6 +188,14 @@ def read_intrinsics_text(path):
                                             params=params)
     return cameras
 
+#读取 images.bin。它非常关键，记录了 qvec（旋转四元数）和 tvec（平移向量）。
+# 该函数负责将 images.bin 文件转换为包含所有图像位姿（相机位置和朝向）的字典。
+# 输入：path_to_model_file (通常是 images.bin 的路径)。
+# 输出：images 字典。
+#     字典结构：{image_id: Image对象, ...}
+#     内容：每个 Image 对象不仅包含相机的位姿信息（旋转 qvec 和平移 tvec），
+#     还包含了该图像上观察到的特征点索引（point3D_ids）。
+
 def read_extrinsics_binary(path_to_model_file):
     """
     see: src/base/reconstruction.cc
@@ -211,7 +230,12 @@ def read_extrinsics_binary(path_to_model_file):
                 xys=xys, point3D_ids=point3D_ids)
     return images
 
-
+# 读取 cameras.bin。它告诉 3DGS 每个相机的焦距、主点位置
+# ，以及它是哪种模型（比如 PINHOLE 针孔相机）。这决定了像素坐标如何投影到 3D 射线。
+#输入：path_to_model_file (通常是 cameras.bin 的路径)。
+# 输出：cameras 字典。
+#     字典结构：{camera_id: Camera对象, ...}
+#     内容：每个 Camera 对象记录了相机的模型类型（如 PINHOLE）、分辨率（width, height）以及焦距等参数（params）。
 def read_intrinsics_binary(path_to_model_file):
     """
     see: src/base/reconstruction.cc

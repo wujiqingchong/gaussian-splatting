@@ -31,9 +31,10 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
 
-    makedirs(render_path, exist_ok=True)
-    makedirs(gts_path, exist_ok=True)
+    makedirs(render_path, exist_ok=True)#为渲染结果创建存放路径（renders 文件夹）
+    makedirs(gts_path, exist_ok=True)#对比用的真实底图路径（gt 文件夹）。
 
+#它会遍历 views（所有的测试用相机视角）。这就像在三维场景中布置摄像机，对每一个视角都进行一次拍照。
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         rendering = render(view, gaussians, pipeline, background, use_trained_exp=train_test_exp, separate_sh=separate_sh)["render"]
         gt = view.original_image[0:3, :, :]
@@ -42,12 +43,15 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
             rendering = rendering[..., rendering.shape[-1] // 2:]
             gt = gt[..., gt.shape[-1] // 2:]
 
+#最后将每一帧渲染出的结果保存为 .png 图片。
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
 
 def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, separate_sh: bool):
     with torch.no_grad():
+        #加载模型：它从 model_path 中读取训练好的模型权重（也就是那几十万个高斯球的 59 维参数）。
         gaussians = GaussianModel(dataset.sh_degree)
+        #场景重构：Scene(...) 负责把这些参数加载到 GPU 显存中，准备好进行渲染。
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
 
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
