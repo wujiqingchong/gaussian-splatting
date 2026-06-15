@@ -23,28 +23,45 @@ from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 
+#可以把它们理解为“数据规格书”，定义了 3DGS 在开始训练前必须拥有的所有必要信息的“容器”。
+#CameraInfo 是在 dataset_readers.py 的 readColmapCameras 函数中被创建出来的。
+# 它综合了 read_intrinsics_binary 和 read_extrinsics_binary 的信息。
 class CameraInfo(NamedTuple):
-    uid: int
-    R: np.array
+    uid: int    #图像的唯一标识。
+    R: np.array #相机的世界坐标变换矩阵（外参），决定了相机在三维空间的姿态。
     T: np.array
-    FovY: np.array
+    FovY: np.array      #垂直和水平视野角（内参），决定了画面显示多广的范围。
     FovX: np.array
     depth_params: dict
-    image_path: str
+    image_path: str     #图像在磁盘上的位置，用于读取原始像素数据进行对比（Loss 计算）。
     image_name: str
     depth_path: str
-    width: int
+    width: int      #图像的分辨率，决定了光栅化时的画布大小。
     height: int
-    is_test: bool
+    is_test: bool       #布尔值，标识这张图是用来训练的（Train）还是用来最后评估效果的（Test）。
 
+
+# 这是数据加载的最终出口。当你运行 readColmapSceneInfo 或 readNerfSyntheticInfo 函数时，
+# 返回的就是这个对象。
+# 它包含了 3DGS 启动训练所需的所有上下文信息。
 class SceneInfo(NamedTuple):
-    point_cloud: BasicPointCloud
+    point_cloud: BasicPointCloud        #一个 BasicPointCloud 对象，包含场景最原始的 XYZ 坐标和 RGB 颜色。它是高斯球生长的初始种子。
+    # train_cameras 和 test_cameras: 
+    # 包含所有训练相机视角和测试相机视角的列表（每一个元素都是 CameraInfo）。
     train_cameras: list
     test_cameras: list
+    #一个字典，存储了场景的中心位置和尺度信息（Radius）。
+    # 这非常重要，因为 3DGS 需要根据这个信息归一化场景，确保模型训练的稳定性。
     nerf_normalization: dict
+    #初始点云文件的路径，方便系统随时读取。
     ply_path: str
+    #布尔值，用于区分你是从真实场景（COLMAP）还是从合成场景（Blender/NeRF 数据）加载的，因为两者的坐标系处理逻辑不同。
     is_nerf_synthetic: bool
 
+
+#getNerfppNorm 的作用是对场景进行“归一化（Normalization）”处理。
+#如果你的模型（高斯球）坐标跨度非常大（比如一个在 (0,0,0)，一个在 (1000,1000,1000)），神经网络很难收敛。
+#这个函数的目的就是通过平移和缩放，把所有相机视角和场景物体控制在一个统一且合理的范围内。
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
         cam_centers = np.hstack(cam_centers)
@@ -56,7 +73,7 @@ def getNerfppNorm(cam_info):
 
     cam_centers = []
 
-    for cam in cam_info:
+    for cam in cam_info:    #cam_info就是上面的CameraInfo数据格式
         W2C = getWorld2View2(cam.R, cam.T)
         C2W = np.linalg.inv(W2C)
         cam_centers.append(C2W[:3, 3:4])
@@ -64,10 +81,14 @@ def getNerfppNorm(cam_info):
     center, diagonal = get_center_and_diag(cam_centers)
     radius = diagonal * 1.1
 
+#translate: 把场景中心平移到原点 (0,0,0)。
+#radius: 将所有数据缩放到以原点为中心、半径约为 diagonal * 1.1 的球体范围内。
     translate = -center
 
     return {"translate": translate, "radius": radius}
 
+
+#readColmapCameras函数就是把colmap_loader.py里的cam_extrinsics, cam_intrinsics外参内参又整合了一下，然后稍微调整适配3dgs
 def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_folder, depths_folder, test_cam_names_list):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
@@ -76,15 +97,23 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         sys.stdout.write("Reading camera {}/{}".format(idx+1, len(cam_extrinsics)))
         sys.stdout.flush()
 
+#key 就是 image_id     cam_extrinsics[key] 取出的就是对应那张特定图片的外参对象    
         extr = cam_extrinsics[key]
         intr = cam_intrinsics[extr.camera_id]
         height = intr.height
         width = intr.width
 
         uid = intr.id
+
+#1. 数据对齐与坐标系转换
+#坐标系转换：COLMAP 使用的是 OpenCV 的相机坐标系（Z 轴指向前方，Y 轴向下）。
+#而 3DGS 在 CUDA 渲染代码中通常需要转换到 OpenGL 风格的坐标系。
         R = np.transpose(qvec2rotmat(extr.qvec))
         T = np.array(extr.tvec)
 
+#2. 内参到视场角（FOV）的投影转换
+#从“焦距”到“视场角”：COLMAP 存储的是相机的焦距（focal length，单位通常是像素），
+# 但 3DGS 的渲染器在计算投影矩阵时，更喜欢用 FOV（Field of View，视角）。
         if intr.model=="SIMPLE_PINHOLE":
             focal_length_x = intr.params[0]
             FovY = focal2fov(focal_length_x, height)
@@ -117,6 +146,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
     sys.stdout.write('\n')
     return cam_infos
 
+#将磁盘上的 .ply 文件解析为 3DGS 可以直接使用的 BasicPointCloud 对象。
 def fetchPly(path):
     plydata = PlyData.read(path)
     vertices = plydata['vertex']
@@ -125,6 +155,7 @@ def fetchPly(path):
     normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
     return BasicPointCloud(points=positions, colors=colors, normals=normals)
 
+#将训练过程中或初始化时的点云数据存回磁盘。
 def storePly(path, xyz, rgb):
     # Define the dtype for the structured array
     dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
@@ -154,6 +185,7 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
         cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
+#加载了 depth_params.json（如果存在深度数据的话），并对深度尺度（scale）进行了中位数平滑处理，确保数据的一致性。
     depth_params_file = os.path.join(path, "sparse/0", "depth_params.json")
     ## if depth_params_file isnt there AND depths file is here -> throw error
     depths_params = None
@@ -176,6 +208,9 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
             print(f"An unexpected error occurred when trying to open depth_params.json file: {e}")
             sys.exit(1)
 
+#如果开启了 eval（评估模式），它会根据 llffhold 参数（例如每隔 8 张图抽 1 张）自动选出测试集。
+#这样训练脚本在跑的时候，就可以通过 train_cam_infos 和 test_cam_infos 
+# 区分开哪些图参与梯度更新，哪些图负责检验模型性能。
     if eval:
         if "360" in path:
             llffhold = 8
@@ -205,15 +240,18 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
     ply_path = os.path.join(path, "sparse/0/points3D.ply")
     bin_path = os.path.join(path, "sparse/0/points3D.bin")
     txt_path = os.path.join(path, "sparse/0/points3D.txt")
+
+#检查是否有 points3D.ply 文件。如果没有，它会读取 points3D.bin (或 .txt)，并调用 storePly 将其转换为 .ply 格式。
+#最后调用 fetchPly 将处理好的点云加载到内存中，作为高斯球生长的初始种子。
     if not os.path.exists(ply_path):
         print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
         try:
-            xyz, rgb, _ = read_points3D_binary(bin_path)
+            xyz, rgb, _ = read_points3D_binary(bin_path) #1. 从二进制文件读出原始点
         except:
             xyz, rgb, _ = read_points3D_text(txt_path)
-        storePly(ply_path, xyz, rgb)
+        storePly(ply_path, xyz, rgb)                     #2. 转换并存为 .ply 文件
     try:
-        pcd = fetchPly(ply_path)
+        pcd = fetchPly(ply_path)                         #3. 最终通过 .ply 加载进 3DGS 训练内存
     except:
         pcd = None
 
@@ -225,6 +263,9 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
                            is_nerf_synthetic=False)
     return scene_info
 
+
+#如果你用 COLMAP 重建真实物体，系统调用 readColmapCameras。
+#如果你用 Blender 渲染虚拟场景，系统调用 readCamerasFromTransforms。
 def readCamerasFromTransforms(path, transformsfile, depths_folder, white_background, is_test, extension=".png"):
     cam_infos = []
 

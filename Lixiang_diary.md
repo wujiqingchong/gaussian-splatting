@@ -152,10 +152,31 @@ SH 系数 (shs)       3*(deg+1)^2    决定视角相关的颜色表现
 ```
 
 # COLMAP
-3DGS 所需的核心燃料：
-cameras.bin：记录了相机的镜头参数（焦距等）。
-images.bin：记录了每一张照片对应的相机位置（位姿）。
-points3D.bin：记录了场景中成千上万个三维点的 XYZ 坐标和 RGB 颜色。
+3DGS 所需的核心燃料：<br>
+cameras.bin：记录了相机的镜头参数（焦距等）。<br>
+images.bin：记录了每一张照片对应的相机位置（位姿）。<br>
+points3D.bin：记录了场景中成千上万个三维点的 XYZ 坐标和 RGB 颜色。<br>
 
-colmap_loader.py 的角色就是一个“数据接口适配器”。
-它的任务就是把 COLMAP 导出的那些晦涩、紧凑的二进制文件，解析成 3DGS 训练脚本（train.py）能够理解的 Python 对象（数组、字典、NamedTuple）。
+colmap_loader.py 的角色就是一个“数据接口适配器”。<br>
+它的任务就是把 COLMAP 导出的那些晦涩、紧凑的二进制文件，解析成 3DGS 训练脚本（train.py）能够理解的 Python 对象（数组、字典、NamedTuple）。<br>
+
+
+# 相机的外参和内参
+1. *相机外参* (Extrinsic Parameters) —— “相机在哪里？”<br>
+外参描述的是相机在三维世界中的位置和朝向。它与相机的物理构造无关，只与它在空间中的放置状态有关。<br>
+包含内容：旋转（R / qvec）和平移（T / tvec）。<br>
+物理含义：<br>
+平移 (T)：相机镜头中心在世界坐标系中的 $(X, Y, Z)$ 坐标。<br>
+旋转 (R)：相机的镜头此时正对着哪个方向。<br>
+用途：用于将世界坐标系下的物体，变换到以相机为原点的相机坐标系下。<br>
+![外参](QQ_1781506699013.png)<br>
+
+2. *相机内参* (Intrinsic Parameters) —— “相机长什么样？”<br>
+内参描述的是相机内部的物理属性，即光线是如何穿过镜头并在传感器（CCD/CMOS）上成像的。它与相机的位置无关。<br>
+包含内容：焦距 (focal length)、主点 (principal point)、畸变参数 (distortion coefficients)。<br>
+你在代码中看到的 params：<br>
+对于你贴出的代码，params 就是内参集合。例如在 PINHOLE 模型中，它通常包含 [fx, fy, cx, cy]。<br>
+fx, fy：焦距（决定了变焦倍数，成像有多大）。<br>
+cx, cy：光轴中心点（决定了图像的中心在哪里）。<br>
+用途：用于将相机坐标系下的 3D 点，投影到二维的图像平面（像素坐标）上。<br>
+![内参](QQ_1781507489057.png)
